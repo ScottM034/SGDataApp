@@ -2,5 +2,4 @@ streamlit
 altair
 pandas
 numpy
-copy
 datetime
