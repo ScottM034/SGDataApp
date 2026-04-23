@@ -415,24 +415,22 @@ def run_group_analysis(df, locations, genders, start_date, end_date, selected_le
             if location != "Total":
                 temp = temp[temp["Location"] == location]
 
-            time_spent = temp["Time Spent"].sum()
+            if len(temp) == 0:
+                results.append([location, 0, 0])
+                continue
 
-            if time_spent > 0:
-                time_spent /= 7
+            temp = temp.drop_duplicates(subset=["Student", "Level", "Location"])
 
-                if location == "Total":
-                    temp = temp.drop_duplicates(subset=["Student", "Location"])
-                else:
-                    temp = temp.drop_duplicates(subset=["Student"])
+            total_weeks = temp["Time Spent"].sum() / 7
+            n = len(temp)
 
-                n = len(temp)
-                avg = time_spent / n if n > 0 else 0
+            avg = total_weeks / n if n > 0 else 0
 
-                results.append([
-                    location,
-                    round(avg, 1),
-                    n
-                ])
+            results.append([
+                location,
+                round(avg, 1),
+                n
+            ])
 
         else:
             for gender in genders:
@@ -443,25 +441,23 @@ def run_group_analysis(df, locations, genders, start_date, end_date, selected_le
 
                 temp = temp[temp["Gender"] == gender]
 
-                time_spent = temp["Time Spent"].sum()
+                if len(temp) == 0:
+                    results.append([location, gender, 0, 0])
+                    continue
 
-                if time_spent > 0:
-                    time_spent /= 7
+                temp = temp.drop_duplicates(subset=["Student", "Level", "Location"])
 
-                    if location == "Total":
-                        temp = temp.drop_duplicates(subset=["Student", "Location"])
-                    else:
-                        temp = temp.drop_duplicates(subset=["Student"])
+                total_weeks = temp["Time Spent"].sum() / 7
+                n = len(temp)
 
-                    n = len(temp)
-                    avg = time_spent / n if n > 0 else 0
+                avg = total_weeks / n if n > 0 else 0
 
-                    results.append([
-                        location,
-                        gender,
-                        round(avg, 1),
-                        n
-                    ])
+                results.append([
+                    location,
+                    gender,
+                    round(avg, 1),
+                    n
+                ])
 
     if total_only:
         return pd.DataFrame(results, columns=["Location", "Avg Weeks", "Students"])
