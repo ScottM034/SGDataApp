@@ -39,37 +39,62 @@ def process_data(full_list):
 
     # Passed logic
     passable_levels = {
-        "Seahorse": "Turtles", "Seahorse Toddler": "Turtles",
-        "Turtles": "Octopus", "Octopus": None,
-        "Starfish": "Shrimp", "Shrimp": "Otters",
-        "Otters": "Penguins", "Penguins": "Sharks",
-        "Sharks": None,
-        "New Swimmers": "Moving and Stroking",
-        "Moving and Stroking": "Breathers One",
-        "Breathers One": "Breathers Two",
-        "Breathers Two": "Improvers",
-        "Improvers": "Seals",
-        "Howick Seals": "Seals",
-        "Seals": "Orcas",
-        "Orcas": "Marlins",
-        "Marlins": "Intro to Club",
-        "Adult Level 1": "Adult Level 2",
-        "Adult Level 2": "Adult Level 3",
-        "Teen New Swimmer": "Teen Moving and Stroking",
-        "Teen Moving and Stroking": "Teen Breathers",
-        "Teen Breathers": "Teen Improvers",
-        "Teen Improvers": "Seals",
-        "Intro to Club": "Dolphins"
-    }
+    "Seahorse": ["Turtles"], "Seahorse Toddler": ["Turtles"],
+    "Turtles": ["Octopus"], "Octopus": [],
+    "Starfish": ["Shrimp"], "Shrimp": ["Otters"],
+    "Otters": ["Penguins"], "Penguins": ["Sharks"],
+    "Sharks": [],
+    "New Swimmers": ["Moving and Stroking"],
+    "Moving and Stroking": ["Breathers One"],
+    "Breathers One": ["Breathers Two"],
+    "Breathers Two": ["Improvers"],
+    "Improvers": ["Seals"],
+    "Howick Seals": ["Seals"],
+    "Seals": ["Orcas"],
+    "Orcas": ["Marlins"],
+    "Marlins": ["Intro to Club", "Dolphins"],
+    "Intro to Club": ["Dolphins"],
+    "Adult Level 1": ["Adult Level 2"],
+    "Adult Level 2": ["Adult Level 3"],
+    "Teen New Swimmer": ["Teen Moving and Stroking"],
+    "Teen Moving and Stroking": ["Teen Breathers"],
+    "Teen Breathers": ["Teen Improvers"],
+    "Teen Improvers": ["Seals"]
+}
 
     bookings = full_list[["Student", "Level"]].drop_duplicates()
 
-    next_level = full_list[["Student", "Level"]].copy()
-    next_level["Level"] = next_level["Level"].map(passable_levels)
+    rows = []
 
-    df_pass = pd.merge(next_level, bookings, on=["Student", "Level"], how="left", indicator=True)
+    for _, row in full_list[["Student", "Level"]].drop_duplicates().iterrows():
+        student = row["Student"]
+        level = row["Level"]
 
-    full_list["Passed"] = np.where(df_pass["_merge"] == "both", True, False)
+        next_levels = passable_levels.get(level, [])
+
+        if not next_levels:
+            continue
+
+        for nxt in next_levels:
+            rows.append((student, level, nxt))
+
+    next_df = pd.DataFrame(rows, columns=["Student", "Level", "Next Level"])
+
+    df_pass = pd.merge(
+        next_df,
+        bookings,
+        left_on=["Student", "Next Level"],
+        right_on=["Student", "Level"],
+        how="left",
+        indicator=True
+    )
+
+    passed_pairs = df_pass[df_pass["_merge"] == "both"][["Student", "Level_x"]]
+    passed_pairs.columns = ["Student", "Level"]
+
+    full_list["Passed"] = full_list.set_index(["Student", "Level"]).index.isin(
+        passed_pairs.set_index(["Student", "Level"]).index
+    )
 
     return full_list
 
@@ -445,7 +470,12 @@ def run_group_analysis(df, locations, genders, start_date, end_date, selected_le
 # -------------------------
 # UI (DEFAULT PAGE)
 # -------------------------
-tab1, tab2, tab3 = st.tabs(["Current Level Information", "Time Spent Analysis", "Time Spent Group Analysis"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Current Level Information",
+    "Time Spent Analysis",
+    "Time Spent Group Analysis",
+    "Student Search"
+])
 
 with tab1:
 
@@ -652,3 +682,137 @@ with tab3:
     # OUTPUT
     # -------------------------
     st.dataframe(results_df, width="stretch", hide_index=True)
+
+
+with tab4:
+
+    st.title("Student Search")
+
+    # -------------------------
+    # SEARCH BOX
+    # -------------------------
+    student_list = sorted(full_list["Student"].dropna().unique())
+
+    selected_student = st.selectbox(
+        "Search Student",
+        student_list
+    )
+
+    if selected_student:
+
+        df_student = full_list[full_list["Student"] == selected_student].copy()
+        df_student["Current"] = df_student["End Date"].isna()
+
+        df_student = df_student.sort_values("Start Date")
+
+        # -------------------------
+        # BUILD LEVEL HISTORY
+        # -------------------------
+        history = []
+
+        for level in df_student["Level"].unique():
+
+            temp = df_student[df_student["Level"] == level]
+
+            start = temp["Start Date"].min()
+            end = temp["End Date"].max()
+
+            is_current = temp["End Date"].isna().any()
+
+            # If still in level
+            if is_current:
+                end_display = datetime.now()
+            else:
+                end_display = end
+
+            weeks = (end_display - start).days / 7
+
+            history.append({
+                "Level": level,
+                "Start": start.date(),
+                "End": end_display.date(),
+                "Weeks": round(weeks, 1),
+                "Status": "Current" if is_current else "Completed"
+            })
+
+        history_df = pd.DataFrame(history)
+
+        # -------------------------
+        # COMPARE TO AVERAGE
+        # -------------------------
+        diffs = []
+
+        for _, row in history_df.iterrows():
+
+            level = row["Level"]
+
+            if level == "Dolphins":
+                avg = np.nan
+                diff = np.nan
+            else:
+                avg_df = yearly_summary(full_list, level, True, "Time Spent")
+
+                if len(avg_df) > 0:
+                    avg = avg_df["Value"].mean()
+                    diff = row["Weeks"] - avg
+                else:
+                    avg = np.nan
+                    diff = np.nan
+
+            diffs.append({
+                "Level": level,
+                "Student Weeks": row["Weeks"],
+                "Average Weeks": avg,
+                "Difference": diff
+            })
+
+        diff_df = pd.DataFrame(diffs)
+
+        # -------------------------
+        # ROUND (keep NaN safe)
+        # -------------------------
+        diff_df["Average Weeks"] = diff_df["Average Weeks"].round(1)
+        diff_df["Difference"] = diff_df["Difference"].round(1)
+
+        # -------------------------
+        # COLOR FUNCTION
+        # -------------------------
+        def color_diff(val):
+            if pd.isna(val):
+                return ""
+
+            max_range = 20  # tweak if needed
+            val = max(-max_range, min(max_range, val))
+
+            if val < 0:
+                # GOOD (faster than avg) → GREEN
+                intensity = int(255 * (1 - abs(val) / max_range))
+                return f"color: rgb({intensity},180,{intensity})"
+            else:
+                # BAD (slower than avg) → RED
+                intensity = int(255 * (1 - val / max_range))
+                return f"color: rgb(200,{intensity},{intensity})"
+
+        # -------------------------
+        # STYLE ONLY DIFFERENCE
+        # -------------------------
+        styled_df = diff_df.style.applymap(
+            color_diff,
+            subset=["Difference"]
+        ).format({
+            "Student Weeks": "{:.1f}",
+            "Average Weeks": lambda x: "-" if pd.isna(x) else f"{x:.1f}",
+            "Difference": lambda x: "-" if pd.isna(x) else f"{x:.1f}"
+        })
+
+        # -------------------------
+        # OUTPUT
+        # -------------------------
+        st.subheader("Level History")
+        st.dataframe(history_df, width="stretch", hide_index=True)
+
+        st.subheader("Performance vs Average")
+        st.dataframe(
+            styled_df,
+            width="stretch"
+        )
