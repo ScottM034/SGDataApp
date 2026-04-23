@@ -768,9 +768,7 @@ with tab4:
 
         diff_df = pd.DataFrame(diffs)
 
-        # -------------------------
-        # ROUND (keep NaN safe)
-        # -------------------------
+        diff_df["Student Weeks"] = diff_df["Student Weeks"].round(1)
         diff_df["Average Weeks"] = diff_df["Average Weeks"].round(1)
         diff_df["Difference"] = diff_df["Difference"].round(1)
 
@@ -781,28 +779,28 @@ with tab4:
             if pd.isna(val):
                 return ""
 
-            max_range = 20  # tweak if needed
-            val = max(-max_range, min(max_range, val))
-
+            # Negative = faster = GOOD → green
             if val < 0:
-                # GOOD (faster than avg) → GREEN
-                intensity = int(255 * (1 - abs(val) / max_range))
-                return f"color: rgb({intensity},180,{intensity})"
+                strength = min(abs(val) / 10, 1)  # scale intensity
+                g = int(150 + 105 * strength)
+                return f"color: rgb(0,{g},0); font-weight: bold;"
+
+            # Positive = slower = BAD → red
             else:
-                # BAD (slower than avg) → RED
-                intensity = int(255 * (1 - val / max_range))
-                return f"color: rgb(200,{intensity},{intensity})"
+                strength = min(val / 10, 1)
+                r = int(150 + 105 * strength)
+                return f"color: rgb({r},0,0); font-weight: bold;"
 
         # -------------------------
         # STYLE ONLY DIFFERENCE
         # -------------------------
-        styled_df = diff_df.style.applymap(
+        styled_df = diff_df.style.map(
             color_diff,
             subset=["Difference"]
         ).format({
             "Student Weeks": "{:.1f}",
-            "Average Weeks": lambda x: "-" if pd.isna(x) else f"{x:.1f}",
-            "Difference": lambda x: "-" if pd.isna(x) else f"{x:.1f}"
+            "Average Weeks": "{:.1f}",
+            "Difference": "{:.1f}"
         })
 
         # -------------------------
