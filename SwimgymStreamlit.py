@@ -300,47 +300,63 @@ def time_spent_summary(df, start_date, end_date, level, total_only=False):
 
 def yearly_summary(df, level, show_total_only, metric="Time Spent"):
 
-    df = df[df["Passed"] == True].copy()
-    df = df[df["Level"] == level]
+    df = df.copy()
 
+    df = df[df["Passed"] == True]
+    df = df[df["Level"] == level]
     df = df.dropna(subset=["End Date"])
-    df["Year"] = df["End Date"].dt.year
+
+    # Determine years to report
+    min_year = 2020
+    max_year = datetime.now().year
+    all_years = list(range(min_year, max_year + 1))
 
     results = []
 
-    for year in sorted(df["Year"].unique()):
+    for year in all_years:
 
-        year_df = df[df["Year"] == year].copy()
+        start_date = pd.Timestamp(year=year, month=1, day=1)
+        end_date = pd.Timestamp(year=year, month=12, day=31)
+
+        year_df = df[
+            (df["End Date"] >= start_date) &
+            (df["End Date"] <= end_date)
+        ].copy()
 
         # -------------------------
-        # TOTAL MODE
+        # TOTAL ONLY
         # -------------------------
         if show_total_only:
 
+            if len(year_df) == 0:
+
+                results.append({
+                    "Year": year,
+                    "Gender": "Total",
+                    "Value": 0,
+                    "Students": 0
+                })
+
+                continue
+
+            students = year_df.drop_duplicates(subset=["Student"])
+            n = len(students)
+
             if metric == "Time Spent":
-
-                # 1 row per student per location
-                temp = year_df.drop_duplicates(subset=["Student", "Location"])
-
-                total_weeks = temp["Time Spent"].sum() / 7
-                students = temp["Student"].nunique()
-
-                value = total_weeks / students if students > 0 else 0
-
+                total_weeks = year_df["Time Spent"].sum() / 7
+                value = round(total_weeks / n, 2) if n > 0 else 0
             else:
-
-                temp = year_df.drop_duplicates(subset=["Student"])
-                value = len(temp)
+                value = n
 
             results.append({
-                "Year": int(year),
+                "Year": year,
                 "Gender": "Total",
-                "Value": round(value, 2),
-                "Students": students if metric == "Time Spent" else len(temp)
+                "Value": value,
+                "Students": n
             })
 
         # -------------------------
-        # GENDER MODE
+        # MALE / FEMALE
         # -------------------------
         else:
 
@@ -349,34 +365,30 @@ def yearly_summary(df, level, show_total_only, metric="Time Spent"):
                 temp = year_df[year_df["Gender"] == gender].copy()
 
                 if len(temp) == 0:
+
                     results.append({
-                        "Year": int(year),
+                        "Year": year,
                         "Gender": gender,
                         "Value": 0,
                         "Students": 0
                     })
+
                     continue
 
+                students = temp.drop_duplicates(subset=["Student"])
+                n = len(students)
+
                 if metric == "Time Spent":
-
-                    temp = temp.drop_duplicates(subset=["Student", "Location"])
-
                     total_weeks = temp["Time Spent"].sum() / 7
-                    students = temp["Student"].nunique()
-
-                    value = total_weeks / students if students > 0 else 0
-
+                    value = round(total_weeks / n, 2) if n > 0 else 0
                 else:
-
-                    temp = temp.drop_duplicates(subset=["Student"])
-                    value = len(temp)
-                    students = len(temp)
+                    value = n
 
                 results.append({
-                    "Year": int(year),
+                    "Year": year,
                     "Gender": gender,
-                    "Value": round(value, 2),
-                    "Students": students
+                    "Value": value,
+                    "Students": n
                 })
 
     return pd.DataFrame(results)
@@ -463,14 +475,156 @@ def run_group_analysis(df, locations, genders, start_date, end_date, selected_le
         return pd.DataFrame(results, columns=["Location", "Avg Weeks", "Students"])
     else:
         return pd.DataFrame(results, columns=["Location", "Gender", "Avg Weeks", "Students"])
+    
+
+def build_yearly_export_tables(df):
+
+    export_tables = []
+
+    locations_export = ["LEP", "Howick", "PAP", "WAI", "OT", "MBS", "Total"]
+    genders_export = ["Both", "Male", "Female"]
+
+    for location in locations_export:
+
+        for gender in genders_export:
+
+            temp = df.copy()
+
+            if location != "Total":
+                temp = temp[temp["Location"] == location]
+
+            if gender != "Both":
+                temp = temp[temp["Gender"] == gender]
+
+            # -------------------------
+            # Average Time Table
+            # -------------------------
+
+            time_rows = []
+
+            for level in all_levels:
+
+                level_df = yearly_summary(
+                    temp,
+                    level,
+                    True,
+                    metric="Time Spent"
+                )
+
+                if len(level_df) == 0:
+                    continue
+
+                row = {"Level": level}
+
+                for _, r in level_df.iterrows():
+                    row[int(r["Year"])] = r["Value"]
+
+                time_rows.append(row)
+
+            time_table = pd.DataFrame(time_rows)
+
+            # -------------------------
+            # Student Count Table
+            # -------------------------
+
+            count_rows = []
+
+            for level in all_levels:
+
+                level_df = yearly_summary(
+                    temp,
+                    level,
+                    True,
+                    metric="Students"
+                )
+
+                if len(level_df) == 0:
+                    continue
+
+                row = {"Level": level}
+
+                for _, r in level_df.iterrows():
+                    row[int(r["Year"])] = r["Value"]
+
+                count_rows.append(row)
+
+            count_table = pd.DataFrame(count_rows)
+
+            def sort_year_columns(df):
+                cols = ["Level"] + sorted(
+                    [c for c in df.columns if c != "Level"],
+                    key=lambda x: int(x)
+                )
+                return df.reindex(columns=cols)
+
+            time_table = sort_year_columns(time_table)
+            count_table = sort_year_columns(count_table)
+            time_table = time_table.fillna(0)
+            count_table = count_table.fillna(0)
+            export_tables.append({
+                "Location": location,
+                "Gender": gender,
+                "Time": time_table,
+                "Students": count_table
+            })
+
+    return export_tables
+
+
+def students_at_risk(df, min_weeks, level_filter="All", day_filter="All"):
+
+    active = df.copy()
+
+    # Keep only current level rows if you want "at risk" to mean current enrolment
+    active = active[active["End Date"].isna()].copy()
+
+    # Extract weekday
+    active["Day"] = (
+        active["Schedule"]
+        .astype(str)
+        .str.split(":")
+        .str[0]
+        .str.strip()
+    )
+
+    # Optional filters
+    if level_filter != "All":
+        active = active[active["Level"] == level_filter]
+
+    if day_filter != "All":
+        active = active[active["Day"] == day_filter]
+
+    # -----------------------------
+    # FIX: compute TRUE time spent per booking
+    # -----------------------------
+    active["Effective End"] = active["End Date"].fillna(pd.Timestamp(datetime.now()))
+    active["Booking Weeks"] = (
+        (active["Effective End"] - active["Start Date"]).dt.days / 7
+    )
+
+    # -----------------------------
+    # SUM across ALL bookings per student + level
+    # -----------------------------
+    grouped = active.groupby(["Student", "Level", "Location", "Day"], as_index=False)["Booking Weeks"].sum()
+
+    grouped = grouped.rename(columns={"Booking Weeks": "Weeks In Level"})
+
+    # filter threshold
+    grouped = grouped[grouped["Weeks In Level"] >= min_weeks]
+
+    grouped = grouped.sort_values("Weeks In Level", ascending=False)
+
+    return grouped
+
 # -------------------------
 # UI (DEFAULT PAGE)
 # -------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Current Level Information",
     "Time Spent Analysis",
     "Time Spent Group Analysis",
-    "Student Search"
+    "Student Search",
+    "Yearly Export"
 ])
 
 with tab1:
@@ -684,69 +838,89 @@ with tab4:
 
     st.title("Student Search")
 
-    # -------------------------
-    # SEARCH BOX
-    # -------------------------
-    student_list = sorted(full_list["Student"].dropna().unique())
-
-    selected_student = st.selectbox(
-        "Search Student",
-        student_list
+    mode = st.radio(
+        "Mode",
+        ["Student Search", "Students At Risk"]
     )
 
-    if selected_student:
+    # =====================================================
+    # STUDENT SEARCH
+    # =====================================================
+    if mode == "Student Search":
 
-        df_student = full_list[full_list["Student"] == selected_student].copy()
-        df_student["Current"] = df_student["End Date"].isna()
+        student_list = sorted(
+            full_list["Student"].dropna().unique()
+        )
 
-        df_student = df_student.sort_values("Start Date")
+        selected_student = st.selectbox(
+            "Search Student",
+            student_list
+        )
 
-        # -------------------------
-        # BUILD LEVEL HISTORY
-        # -------------------------
-        history = []
+        if selected_student:
 
-        for level in df_student["Level"].unique():
+            df_student = full_list[
+                full_list["Student"] == selected_student
+            ].copy()
 
-            temp = df_student[df_student["Level"] == level]
+            df_student["Current"] = (
+                df_student["End Date"].isna()
+            )
 
-            start = temp["Start Date"].min()
-            end = temp["End Date"].max()
+            df_student = df_student.sort_values(
+                "Start Date"
+            )
 
-            is_current = temp["End Date"].isna().any()
+            history = []
 
-            # If still in level
-            if is_current:
-                end_display = datetime.now()
-            else:
-                end_display = end
+            for level in df_student["Level"].unique():
 
-            weeks = (end_display - start).days / 7
+                temp = df_student[
+                    df_student["Level"] == level
+                ]
 
-            history.append({
-                "Level": level,
-                "Start": start.date(),
-                "End": end_display.date(),
-                "Weeks": round(weeks, 1),
-                "Status": "Current" if is_current else "Completed"
-            })
+                start = temp["Start Date"].min()
+                end = temp["End Date"].max()
 
-        history_df = pd.DataFrame(history)
+                is_current = (
+                    temp["End Date"].isna().any()
+                )
 
-        # -------------------------
-        # COMPARE TO AVERAGE
-        # -------------------------
-        diffs = []
+                if is_current:
+                    end_display = datetime.now()
+                else:
+                    end_display = end
 
-        for _, row in history_df.iterrows():
+                weeks = (
+                    end_display - start
+                ).days / 7
 
-            level = row["Level"]
+                history.append({
+                    "Level": level,
+                    "Start": start.date(),
+                    "End": end_display.date(),
+                    "Weeks": round(weeks, 1),
+                    "Status": (
+                        "Current"
+                        if is_current
+                        else "Completed"
+                    )
+                })
 
-            if level == "Dolphins":
-                avg = np.nan
-                diff = np.nan
-            else:
-                avg_df = yearly_summary(full_list, level, True, "Time Spent")
+            history_df = pd.DataFrame(history)
+
+            diffs = []
+
+            for _, row in history_df.iterrows():
+
+                level = row["Level"]
+
+                avg_df = yearly_summary(
+                    full_list,
+                    level,
+                    True,
+                    "Time Spent"
+                )
 
                 if len(avg_df) > 0:
                     avg = avg_df["Value"].mean()
@@ -755,58 +929,165 @@ with tab4:
                     avg = np.nan
                     diff = np.nan
 
-            diffs.append({
-                "Level": level,
-                "Student Weeks": row["Weeks"],
-                "Average Weeks": avg,
-                "Difference": diff
-            })
+                diffs.append({
+                    "Level": level,
+                    "Student Weeks": row["Weeks"],
+                    "Average Weeks": avg,
+                    "Difference": diff
+                })
 
-        diff_df = pd.DataFrame(diffs)
+            diff_df = pd.DataFrame(diffs)
 
-        diff_df["Student Weeks"] = diff_df["Student Weeks"].round(1)
-        diff_df["Average Weeks"] = diff_df["Average Weeks"].round(1)
-        diff_df["Difference"] = diff_df["Difference"].round(1)
+            diff_df["Student Weeks"] = (
+                diff_df["Student Weeks"].round(1)
+            )
 
-        # -------------------------
-        # COLOR FUNCTION
-        # -------------------------
-        def color_diff(val):
-            if pd.isna(val):
-                return ""
+            diff_df["Average Weeks"] = (
+                diff_df["Average Weeks"].round(1)
+            )
 
-            # Negative = faster = GOOD → green
-            if val < 0:
-                strength = min(abs(val) / 10, 1)  # scale intensity
-                g = int(150 + 105 * strength)
-                return f"color: rgb(0,{g},0); font-weight: bold;"
+            diff_df["Difference"] = (
+                diff_df["Difference"].round(1)
+            )
 
-            # Positive = slower = BAD → red
-            else:
+            def color_diff(val):
+
+                if pd.isna(val):
+                    return ""
+
+                if val < 0:
+                    strength = min(abs(val) / 10, 1)
+                    g = int(150 + 105 * strength)
+                    return f"color: rgb(0,{g},0); font-weight: bold;"
+
                 strength = min(val / 10, 1)
                 r = int(150 + 105 * strength)
                 return f"color: rgb({r},0,0); font-weight: bold;"
 
-        # -------------------------
-        # STYLE ONLY DIFFERENCE
-        # -------------------------
-        styled_df = diff_df.style.map(
-            color_diff,
-            subset=["Difference"]
-        ).format({
-            "Student Weeks": "{:.1f}",
-            "Average Weeks": "{:.1f}",
-            "Difference": "{:.1f}"
-        })
+            styled_df = diff_df.style.format({
+                "Student Weeks": "{:.1f}",
+                "Average Weeks": "{:.1f}",
+                "Difference": "{:.1f}"
+            }).map(
+                color_diff,
+                subset=["Difference"]
+            )
 
-        # -------------------------
-        # OUTPUT
-        # -------------------------
-        st.subheader("Level History")
-        st.dataframe(history_df, width="stretch", hide_index=True)
+            st.subheader("Level History")
+            st.dataframe(
+                history_df.round(1),
+                width="stretch",
+                hide_index=True
+            )
 
-        st.subheader("Performance vs Average")
+            st.subheader("Performance vs Average")
+            st.dataframe(
+                styled_df,
+                width="stretch"
+            )
+
+    # =====================================================
+    # STUDENTS AT RISK
+    # =====================================================
+    else:
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            min_weeks = st.selectbox(
+                "Minimum Time In Level",
+                [10, 20, 30, 40, 52],
+                index=1
+            )
+
+        with col2:
+            level_filter = st.selectbox(
+                "Level",
+                ["All"] + all_levels
+            )
+
+        with col3:
+
+            days = sorted(
+                full_list["Schedule"]
+                .astype(str)
+                .str.split(":")
+                .str[0]
+                .dropna()
+                .unique()
+            )
+
+            day_filter = st.selectbox(
+                "Day",
+                ["All"] + list(days)
+            )
+
+        risk_df = students_at_risk(
+            full_list,
+            min_weeks,
+            level_filter,
+            day_filter
+        )
+
+        # Pagination
+        page_size = 50
+
+        total_pages = max(
+            1,
+            int(np.ceil(len(risk_df) / page_size))
+        )
+
+        page = st.number_input(
+            "Page",
+            min_value=1,
+            max_value=total_pages,
+            value=1,
+            step=1
+        )
+
+        start_row = (page - 1) * page_size
+        end_row = start_row + page_size
+
+        display_df = risk_df.iloc[
+            start_row:end_row
+        ]
+
+        st.caption(
+            f"Showing {start_row + 1}-{min(end_row, len(risk_df))} of {len(risk_df)} students"
+        )
+
         st.dataframe(
-            styled_df,
-            width="stretch"
+            display_df.round(1),
+            width="stretch",
+            hide_index=True
+        )
+
+with tab5:
+
+    st.title("Yearly Export")
+
+    if st.button("Generate Export"):
+
+        export_tables = build_yearly_export_tables(full_list)
+
+        csv_text = ""
+
+        for table in export_tables:
+
+            csv_text += f"Location,{table['Location']}\n"
+            csv_text += f"Gender,{table['Gender']}\n\n"
+
+            csv_text += "Average Time Spent (Weeks)\n"
+            csv_text += table["Time"].to_csv(index=False)
+            csv_text += "\n"
+
+            csv_text += "Students Moved Up\n"
+            csv_text += table["Students"].to_csv(index=False)
+            csv_text += "\n\n\n"
+
+        st.download_button(
+            "Download CSV",
+            csv_text,
+            file_name="yearly_summary_export.csv",
+            mime="text/csv"
         )
