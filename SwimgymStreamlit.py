@@ -579,7 +579,7 @@ def time_spent_summary(df, start_date, end_date, level, total_only=False):
         temp = temp_base if loc == "Total" else temp_base[temp_base["Location"] == loc]
 
         if total_only:
-            grouped = temp.groupby("StudentID", as_index=False)["Booking Weeks"].sum()
+            grouped = temp.groupby(["Location", "StudentID"], as_index=False)["Booking Weeks"].sum()
             n = len(grouped)
             avg = grouped["Booking Weeks"].mean() if n else 0
 
@@ -591,7 +591,7 @@ def time_spent_summary(df, start_date, end_date, level, total_only=False):
         else:
             for gender in genders:
                 gender_temp = temp[temp["Gender"] == gender]
-                grouped = gender_temp.groupby("StudentID", as_index=False)["Booking Weeks"].sum()
+                grouped = gender_temp.groupby(["Location", "StudentID"], as_index=False)["Booking Weeks"].sum()
                 n = len(grouped)
                 avg = grouped["Booking Weeks"].mean() if n else 0
 
@@ -623,32 +623,34 @@ def yearly_summary(df, level, show_total_only, metric="Time Spent"):
 
         if show_total_only:
             if metric == "Time Spent":
-                grouped = year_df.groupby("StudentID", as_index=False)["Time Spent"].sum()
+                # Combined totals add location-level counts. A StudentID may
+                # appear in more than one location's export.
+                grouped = year_df.groupby(["Location", "StudentID"], as_index=False)["Time Spent"].sum()
                 value = round(grouped["Time Spent"].sum() / 7 / len(grouped), 2) if len(grouped) else 0
             else:
-                value = year_df["StudentID"].nunique()
+                value = year_df[["Location", "StudentID"]].drop_duplicates().shape[0]
 
             results.append({
                 "Year": year,
                 "Gender": "Total",
                 "Value": value,
-                "Students": year_df["StudentID"].nunique()
+                "Students": year_df[["Location", "StudentID"]].drop_duplicates().shape[0]
             })
         else:
             for gender in genders:
                 gender_df = year_df[year_df["Gender"] == gender]
 
                 if metric == "Time Spent":
-                    grouped = gender_df.groupby("StudentID", as_index=False)["Time Spent"].sum()
+                    grouped = gender_df.groupby(["Location", "StudentID"], as_index=False)["Time Spent"].sum()
                     value = round(grouped["Time Spent"].sum() / 7 / len(grouped), 2) if len(grouped) else 0
                 else:
-                    value = gender_df["StudentID"].nunique()
+                    value = gender_df[["Location", "StudentID"]].drop_duplicates().shape[0]
 
                 results.append({
                     "Year": year,
                     "Gender": gender,
                     "Value": value,
-                    "Students": gender_df["StudentID"].nunique()
+                    "Students": gender_df[["Location", "StudentID"]].drop_duplicates().shape[0]
                 })
 
     return pd.DataFrame(results)
