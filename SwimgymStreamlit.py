@@ -212,13 +212,28 @@ def process_data(full_list, lep_data_uploaded=False):
     full_list = full_list.copy()
     full_list["Class Name"] = full_list["Class/Camp/Appointment"].fillna("").astype(str).str.strip()
 
-    # Fix locations only for rows that originally came from Sites.
+    # Split the combined Sites and Seasonal exports into the four actual
+    # locations when their class names identify a site. Rows without a site
+    # name fall back to the export's usual location below.
     if "Class/Camp/Appointment" in full_list.columns:
-        mask_sites = full_list["Location"].eq("Sites")
-        text_col = full_list.loc[mask_sites, "Class/Camp/Appointment"].fillna("").astype(str)
-
-        for code, location in [("PAP", "PAP"), ("WAI", "WAI"), ("OT", "OT"), ("MBS", "MBS")]:
-            full_list.loc[mask_sites & text_col.str.contains(code, case=False, na=False), "Location"] = location
+        combined_export = full_list["Location"].isin(["Sites", "Seasonal"])
+        text_col = full_list["Class/Camp/Appointment"].fillna("").astype(str)
+        location_patterns = [
+            (r"\bPAP\b|Papatoetoe", "PAP"),
+            (r"\bOTA?\b|Otara|Ōtara", "OT"),
+            (r"\bMBS\b|Maraetai", "MBS"),
+            (r"\bWAI\b|Waiheke", "WAI"),
+        ]
+        for pattern, location in location_patterns:
+            full_list.loc[
+                combined_export & text_col.str.contains(pattern, case=False, na=False),
+                "Location"
+            ] = location
+        # Legacy source labels describe upload groups, not locations.
+        full_list["Location"] = full_list["Location"].replace({
+            "Sites": "PAP",
+            "Seasonal": "MBS",
+        })
 
     # Dates
     start_drop = full_list["Start/Drop Date"].fillna("").astype(str)
@@ -345,8 +360,8 @@ def process_data(full_list, lep_data_uploaded=False):
 
 st.title("SwimGym Insights")
 st.subheader("Upload Location Data")
-st.caption("Upload each location’s CSV export.")
-upload_cols = st.columns(3)
+st.caption("Upload each location group’s CSV export. The Instructor column is optional; beta instructor pages need it.")
+upload_cols = st.columns(4)
 with upload_cols[0]:
     lep_file = st.file_uploader("LEP Location File", type="csv", key="lep_location_upload", help="The file should contain the LEP location code.")
     st.caption("File code: LEP")
@@ -354,8 +369,11 @@ with upload_cols[1]:
     howick_file = st.file_uploader("Howick Location File", type="csv", key="howick_location_upload", help="The file should contain the HWK location code.")
     st.caption("File code: HWK")
 with upload_cols[2]:
-    sites_file = st.file_uploader("Sites Location File", type="csv", key="sites_location_upload", help="The file should contain a site code such as PAP, WAI, OT or MBS.")
-    st.caption("File codes: PAP · WAI · OT · MBS")
+    sites_file = st.file_uploader("Sites File", type="csv", key="sites_location_upload", help="Papatoetoe and Otara data. The export should include PAP/Papatoetoe or OT/Otara in class names.")
+    st.caption("Papatoetoe · Otara")
+with upload_cols[3]:
+    seasonal_file = st.file_uploader("Seasonal File", type="csv", key="seasonal_location_upload", help="Maraetai and Waiheke data. The export should include MBS/Maraetai or WAI/Waiheke in class names.")
+    st.caption("Maraetai · Waiheke")
 
 with st.expander("Review or edit school term dates", expanded=False):
     st.caption("Term dates are prefilled from 2022–2028. Friday school end dates extend to Sunday.")
@@ -380,10 +398,10 @@ st.divider()
 
 dataframes = []
 
-# Load booking data. The CSVs use the column name "Instructor".
+# Instructor is optional; all other booking fields are needed for reporting.
 REQUIRED_COLUMNS = [
     "Student", "Birthday", "Gender", "Guardian 1", "Level",
-    "Start/Drop Date", "Schedule", "Instructor"
+    "Start/Drop Date", "Schedule"
 ]
 BOOKING_TYPE_COLUMNS = ["Class/Camp/Appointment", "Class/Event/Appointment"]
 
@@ -392,8 +410,9 @@ def _load_booking_bytes(csv_bytes, location):
     data = pd.read_csv(io.BytesIO(csv_bytes))
     expected_codes = {
         "LEP": ["LEP"],
-        "Howick": ["HWK"],
-        "Sites": ["PAP", "WAI", "OT", "MBS"]
+        "Howick": ["HWK", "Howick"],
+        "Sites": ["PAP", "Papatoetoe", "OT", "OTA", "Otara", "Ōtara"],
+        "Seasonal": ["WAI", "Waiheke", "MBS", "Maraetai"]
     }[location]
     code_pattern = re.compile(
         r"(?<![A-Z0-9])(?:" + "|".join(expected_codes) + r")(?![A-Z0-9])",
@@ -402,7 +421,7 @@ def _load_booking_bytes(csv_bytes, location):
     cell_values = data.fillna("").astype(str).to_numpy().ravel()
     if not any(code_pattern.search(value) for value in cell_values):
         expected = ", ".join(expected_codes)
-        raise ValueError(f"The file uploaded as {location} does not contain an expected location code ({expected}). Check that it is the correct export.")
+        raise ValueError(f"The file uploaded as {location} does not contain an expected location name or code ({expected}). Check that it is the correct export.")
 
     missing = [c for c in REQUIRED_COLUMNS if c not in data.columns]
     if missing:
@@ -420,7 +439,12 @@ def _load_booking_bytes(csv_bytes, location):
             data["Class/Event/Appointment"]
         )
 
-    data = data[REQUIRED_COLUMNS + ["Class/Camp/Appointment"]].copy()
+    has_instructor_column = "Instructor" in data.columns
+    if not has_instructor_column:
+        data["Instructor"] = "Unknown"
+
+    data = data[REQUIRED_COLUMNS + ["Class/Camp/Appointment", "Instructor"]].copy()
+    data["Instructor Column Available"] = has_instructor_column
     data["Instructor"] = data["Instructor"].fillna("Unknown").astype(str).str.strip()
     data.loc[data["Instructor"].isin(["", "nan", "None"]), "Instructor"] = "Unknown"
     data["Location"] = location
@@ -449,6 +473,12 @@ if sites_file is not None:
     except ValueError as e:
         st.error(str(e))
 
+if seasonal_file is not None:
+    try:
+        dataframes.append(load_booking_file(seasonal_file, "Seasonal"))
+    except ValueError as e:
+        st.error(str(e))
+
 
 # Stop if no valid data was uploaded.
 if not dataframes:
@@ -457,18 +487,20 @@ if not dataframes:
 
 # ✅ Build dataset
 full_list = pd.concat(dataframes, ignore_index=True)
+instructor_column_available = bool(full_list["Instructor Column Available"].all())
+full_list = full_list.drop(columns=["Instructor Column Available"])
 lep_data_uploaded = full_list["Location"].eq("LEP").any()
 full_list = process_data(full_list, lep_data_uploaded)
 LEP_DATA_UPLOADED = lep_data_uploaded
 
 genders = ["Male", "Female"]
-location_order = ["LEP", "Howick", "PAP", "WAI", "OT", "MBS"]
+location_order = ["LEP", "Howick", "PAP", "OT", "MBS", "WAI"]
 available_locations = [
     location for location in location_order
     if full_list["Location"].eq(location).any()
 ]
 available_locations += sorted(
-    set(full_list["Location"].dropna().astype(str).unique()) - set(location_order)
+    set(full_list["Location"].dropna().astype(str).unique()) - set(location_order) - {"Sites", "Seasonal"}
 )
 locations = available_locations + ["Total"]
 
@@ -1093,7 +1125,7 @@ def instructor_leaderboard(records, min_students=MIN_INSTRUCTOR_GROUP_STUDENTS):
 
 
 @st.cache_data(show_spinner=False)
-def instructor_location_distribution(records, min_students=MIN_INSTRUCTOR_GROUP_STUDENTS):
+def instructor_location_distribution(records):
     if records.empty:
         return pd.DataFrame()
 
@@ -1109,18 +1141,18 @@ def instructor_location_distribution(records, min_students=MIN_INSTRUCTOR_GROUP_
         )
     )
     distribution["Move Up Percentage"] *= 100
-    return distribution[
-        distribution["Students Assessed"] >= min_students
-    ].copy()
+    return distribution
 
 
 def instructor_distribution_chart(distribution, locations):
     if distribution.empty:
         return None
 
+    # Keep every uploaded location available to hover, even when its current
+    # term has no instructor rows in one or more move-up-rate bins.
     chart_locations = [
         location for location in locations
-        if location in set(distribution["Location"].dropna())
+        if location not in {"Sites", "Seasonal"}
     ]
     color_scale = alt.Scale(scheme="tableau10", domain=chart_locations)
     location_hover = alt.selection_point(
@@ -1281,7 +1313,7 @@ def latest_completed_term(df, calendar):
 
 
 @st.cache_data(show_spinner=False)
-def build_term_insights(df, calendar, shift_overrides=None):
+def build_term_insights(df, calendar, shift_overrides=None, include_instructors=True):
     latest = latest_completed_term(df, calendar)
     if latest is None:
         return None, {"locations": [], "instructors": {}}
@@ -1292,7 +1324,7 @@ def build_term_insights(df, calendar, shift_overrides=None):
     title = f"{term} {year}"
 
     location_insights = []
-    main_locations = ["LEP", "Howick", "PAP"]
+    main_locations = ["LEP", "Howick", "PAP", "OT", "MBS", "WAI"]
     if previous.empty:
         for location in main_locations:
             location_insights.append({
@@ -1342,10 +1374,14 @@ def build_term_insights(df, calendar, shift_overrides=None):
                 "Projection": annual_move_projection(df, location)
             })
 
-    instructor_data = instructor_records(
-        df, latest["Start Date"].date(), latest["Swim End Date"].date(), shift_overrides
-    )
-    instructor_highlights = {}
+    instructor_highlights = {group: None for group in INSTRUCTOR_PROGRAM_GROUPS}
+    if include_instructors:
+        instructor_data = instructor_records(
+            df, latest["Start Date"].date(), latest["Swim End Date"].date(), shift_overrides
+        )
+    else:
+        instructor_data = pd.DataFrame()
+
     if not instructor_data.empty:
         instructor_data["Program Group"] = instructor_data["Level"].map(
             {
@@ -1393,9 +1429,6 @@ def build_term_insights(df, calendar, shift_overrides=None):
                     "best_rate": best_rate,
                     "most_moves": most_moves
                 }
-    else:
-        instructor_highlights = {group: None for group in INSTRUCTOR_PROGRAM_GROUPS}
-
     return title, {
         "locations": location_insights,
         "instructors": instructor_highlights
@@ -1653,7 +1686,7 @@ if instructor_term is not None:
     instructor_term_start = instructor_term["Start Date"].date()
     instructor_term_end = instructor_term["Swim End Date"].date()
     insight_term = f"{instructor_term['Term']} {int(instructor_term['Year'])}"
-    if page in {"Home", SHIFT_EDITOR_PAGE}:
+    if page in {"Home", SHIFT_EDITOR_PAGE} and instructor_column_available:
         term_shift_rows, term_shift_staff_options = instructor_shift_editor_data(
             full_list, instructor_term_start, instructor_term_end, shift_overrides
         )
@@ -1674,19 +1707,28 @@ if page == "Home":
     metric_cols[0].metric("Active Swimmers", f"{active_students_count:,}")
     metric_cols[1].metric("Students In Data", f"{student_count:,}")
     metric_cols[2].metric("Locations Loaded", f"{len(available_locations)}")
-    metric_cols[3].metric("Instructors Listed · BETA", f"{instructor_count:,}")
-    insight_term, insight_data = build_term_insights(full_list, term_calendar, shift_overrides)
+    metric_cols[3].metric(
+        "Instructors Listed · BETA",
+        f"{instructor_count:,}" if instructor_column_available else "Add column",
+        help=None if instructor_column_available else "Add an Instructor column to each uploaded CSV to show instructor statistics."
+    )
+    insight_term, insight_data = build_term_insights(
+        full_list, term_calendar, shift_overrides,
+        include_instructors=instructor_column_available
+    )
     st.subheader("Insights")
     if insight_term:
         st.caption(f"Location comparison and instructor results: latest completed term, {insight_term}.")
 
-    st.markdown("**Move-Ups By Main Location**")
-    location_cols = st.columns(3)
-    for index, location_insight in enumerate(insight_data["locations"]):
-        with location_cols[index]:
-            st.markdown(f"**{location_insight['Location']}**")
-            st.write(location_insight["Message"])
-            st.caption(location_insight["Projection"])
+    st.markdown("**Move-Ups By Location**")
+    location_insights = insight_data["locations"]
+    for row_start in range(0, len(location_insights), 3):
+        location_cols = st.columns(3)
+        for col, location_insight in zip(location_cols, location_insights[row_start:row_start + 3]):
+            with col:
+                st.markdown(f"**{location_insight['Location']}**")
+                st.write(location_insight["Message"])
+                st.caption(location_insight["Projection"])
 
     st.markdown("**Yearly Move-Up Trend**")
     moveup_series = annual_moveup_timeseries(full_list)
@@ -1720,29 +1762,32 @@ if page == "Home":
             st.altair_chart(trend_chart, width="stretch")
 
     with st.expander("Instructor Highlights By Programme · BETA", expanded=False):
-        st.caption("Ranked by move-up rate and number of students moved up in the latest completed term.")
-        program_groups = list(INSTRUCTOR_PROGRAM_GROUPS)
-        for row_start in range(0, len(program_groups), 2):
-            group_cols = st.columns(2)
-            for col_index, program_group in enumerate(program_groups[row_start:row_start + 2]):
-                with group_cols[col_index]:
-                    st.markdown(f"**{program_group}**")
-                    highlights = insight_data["instructors"].get(program_group)
-                    if not highlights:
-                        st.write(f"No instructor had more than {MIN_INSTRUCTOR_GROUP_STUDENTS - 1} assessed students in this programme during {insight_term or 'the last completed term'}.")
-                        continue
+        if not instructor_column_available:
+            st.info("Add an Instructor column to each uploaded CSV to view instructor highlights.")
+        else:
+            st.caption("Ranked by move-up rate and number of students moved up in the latest completed term.")
+            program_groups = list(INSTRUCTOR_PROGRAM_GROUPS)
+            for row_start in range(0, len(program_groups), 2):
+                group_cols = st.columns(2)
+                for col_index, program_group in enumerate(program_groups[row_start:row_start + 2]):
+                    with group_cols[col_index]:
+                        st.markdown(f"**{program_group}**")
+                        highlights = insight_data["instructors"].get(program_group)
+                        if not highlights:
+                            st.write(f"No instructor had more than {MIN_INSTRUCTOR_GROUP_STUDENTS - 1} assessed students in this programme during {insight_term or 'the last completed term'}.")
+                            continue
 
-                    best_rate = highlights["best_rate"]
-                    most_moves = highlights["most_moves"]
-                    st.write(
-                        f"Best move-up rate: **{best_rate['Instructor']}** — "
-                        f"{best_rate['Move Up Rate']:.0%} "
-                        f"({int(best_rate['Moved_Up'])}/{int(best_rate['Assessed'])})."
-                    )
-                    st.write(
-                        f"Most students moved up: **{most_moves['Instructor']}** — "
-                        f"{int(most_moves['Moved_Up'])} of {int(most_moves['Assessed'])}."
-                    )
+                        best_rate = highlights["best_rate"]
+                        most_moves = highlights["most_moves"]
+                        st.write(
+                            f"Best move-up rate: **{best_rate['Instructor']}** — "
+                            f"{best_rate['Move Up Rate']:.0%} "
+                            f"({int(best_rate['Moved_Up'])}/{int(best_rate['Assessed'])})."
+                        )
+                        st.write(
+                            f"Most students moved up: **{most_moves['Instructor']}** — "
+                            f"{int(most_moves['Moved_Up'])} of {int(most_moves['Assessed'])}."
+                        )
     st.divider()
 
 if page == "Current Swimmers":
@@ -2191,7 +2236,9 @@ if page == INSTRUCTOR_INSIGHTS_PAGE:
     st.header("Instructor Insights · BETA")
     st.caption("Names use the final First Last pair in the Instructor field. Edit shift assignments to correct them.")
 
-    if instructor_term is None:
+    if not instructor_column_available:
+        st.info("Add an Instructor column to each uploaded CSV to view instructor insights.")
+    elif instructor_term is None:
         st.info("There is not enough dated booking data to identify a latest completed term.")
     else:
         start_date, end_date = instructor_term_start, instructor_term_end
@@ -2284,7 +2331,9 @@ if page == INSTRUCTOR_INSIGHTS_PAGE:
 
 if page == SHIFT_EDITOR_PAGE:
     st.header("Instructor Assignments By Shift · BETA")
-    if instructor_term is None:
+    if not instructor_column_available:
+        st.info("Add an Instructor column to each uploaded CSV to edit instructor assignments by shift.")
+    elif instructor_term is None:
         st.info("A completed term is needed before shifts can be edited.")
     else:
         st.caption(f"{insight_term} assignments by weekday. Changes stay in this browser session and update home insights and the leaderboard.")
